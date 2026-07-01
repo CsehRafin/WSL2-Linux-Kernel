@@ -42,6 +42,9 @@ as follows:
 Then, you can use a provided script to create a VHDX containing the modules:
    `$ sudo ./Microsoft/scripts/gen_modules_vhdx.sh "$PWD/modules" $(make -s kernelrelease) modules.vhdx`
 
+Then, you can use a provided script (modified by me) to create a VHDX containing the modules (on a different dir than $(mktemp -d)):
+   `$ sudo ./csehrafin/modified_scripts/gen_modules_vhdx.sh "$PWD/modules" $(make -s kernelrelease) modules.vhdx`
+
 To save space, you can now delete the compilation artifacts:
    `$ make clean && rm -r "$PWD/modules"`
 

@@ -52,7 +52,6 @@
 #include <linux/acpi.h>
 #include <linux/sizes.h>
 #include <linux/of_irq.h>
-#include <linux/swiotlb.h>
 #include <asm/mshyperv.h>
 
 /*
@@ -469,42 +468,6 @@ struct pci_eject_response {
 
 static int pci_ring_size = VMBUS_RING_SIZE(SZ_16K);
 
-static phys_addr_t hv_pci_swiotlb_base;
-static size_t hv_pci_swiotlb_size;
-static bool hv_pci_swiotlb_published;
-
-#ifndef MODULE
-/*
- * Parse hv_pci_swiotlb=<size>; the base is picked when the driver
- * initializes.  early_param is only available in built-in builds, so the
- * dedicated pool feature is effectively built-in only; module builds fall
- * back to the default swiotlb pool.
- */
-static int __init early_hv_pci_swiotlb(char *p)
-{
-	char *end;
-
-	if (!*p)
-		return 0;
-
-	hv_pci_swiotlb_size = memparse(p, &end);
-	if (*end != '\0') {
-		pr_warn("hv_pci: ignoring hv_pci_swiotlb=%s; expected hv_pci_swiotlb=<size>\n",
-			p);
-		hv_pci_swiotlb_size = 0;
-		return 0;
-	}
-
-	if (hv_pci_swiotlb_size)
-		hv_pci_swiotlb_size = ALIGN(hv_pci_swiotlb_size, SZ_2M);
-
-	return 0;
-}
-early_param("hv_pci_swiotlb", early_hv_pci_swiotlb);
-#endif /* !MODULE */
-
-static struct io_tlb_mem *hv_pci_swiotlb_pool;
-
 /*
  * Driver specific state.
  */
@@ -538,7 +501,6 @@ struct hv_pcibus_device {
 	struct resource *low_mmio_res;
 	struct resource *high_mmio_res;
 	struct completion *survey_event;
-	struct pci_bus *pci_bus;
 	spinlock_t config_lock;	/* Avoid two threads writing index page */
 	spinlock_t device_list_lock;	/* Protect lists below */
 	void __iomem *cfg_addr;
@@ -983,7 +945,7 @@ static int hv_pci_irqchip_init(void)
 	struct irq_domain *irq_domain_parent = NULL;
 	int ret = -ENOMEM;
 
-	chip_data = kzalloc(sizeof(*chip_data), GFP_KERNEL);
+	chip_data = kzalloc_obj(*chip_data);
 	if (!chip_data)
 		return ret;
 
@@ -1970,7 +1932,7 @@ static void hv_compose_msi_msg(struct irq_data *data, struct msi_msg *msg)
 		hv_int_desc_free(hpdev, int_desc);
 	}
 
-	int_desc = kzalloc(sizeof(*int_desc), GFP_ATOMIC);
+	int_desc = kzalloc_obj(*int_desc, GFP_ATOMIC);
 	if (!int_desc)
 		goto drop_reference;
 
@@ -2548,25 +2510,6 @@ static void hv_pci_assign_numa_node(struct hv_pcibus_device *hbus)
 }
 
 /**
- * hv_pci_assign_swiotlb() - assign dedicated swiotlb pool to bus devices
- * @bus:	PCI bus whose devices should use the pool
- *
- * If a dedicated swiotlb pool was configured via hv_pci_swiotlb=,
- * assign it to every device on the bus so their DMA bounce buffering
- * uses the restricted region.
- */
-static void hv_pci_assign_swiotlb(struct pci_bus *bus)
-{
-	struct pci_dev *dev;
-
-	if (!hv_pci_swiotlb_pool)
-		return;
-
-	list_for_each_entry(dev, &bus->devices, bus_list)
-		dev->dev.dma_io_tlb_mem = hv_pci_swiotlb_pool;
-}
-
-/**
  * create_root_hv_pci_bus() - Expose a new root PCI bus
  * @hbus:	Root PCI bus, as understood by this driver
  *
@@ -2589,7 +2532,6 @@ static int create_root_hv_pci_bus(struct hv_pcibus_device *hbus)
 	hv_pci_assign_numa_node(hbus);
 	pci_bus_assign_resources(bridge->bus);
 	hv_pci_assign_slots(hbus);
-	hv_pci_assign_swiotlb(bridge->bus);
 	pci_bus_add_devices(bridge->bus);
 	pci_unlock_rescan_remove();
 	hbus->state = hv_pcibus_installed;
@@ -2658,7 +2600,7 @@ static struct hv_pci_dev *new_pcichild_device(struct hv_pcibus_device *hbus,
 	unsigned long flags;
 	int ret;
 
-	hpdev = kzalloc(sizeof(*hpdev), GFP_KERNEL);
+	hpdev = kzalloc_obj(*hpdev);
 	if (!hpdev)
 		return NULL;
 
@@ -2860,7 +2802,6 @@ static void pci_devices_present_work(struct work_struct *work)
 		pci_scan_child_bus(hbus->bridge->bus);
 		hv_pci_assign_numa_node(hbus);
 		hv_pci_assign_slots(hbus);
-		hv_pci_assign_swiotlb(hbus->bridge->bus);
 		pci_unlock_rescan_remove();
 		break;
 
@@ -2898,7 +2839,7 @@ static int hv_pci_start_relations_work(struct hv_pcibus_device *hbus,
 		return -ENOENT;
 	}
 
-	dr_wrk = kzalloc(sizeof(*dr_wrk), GFP_NOWAIT);
+	dr_wrk = kzalloc_obj(*dr_wrk, GFP_NOWAIT);
 	if (!dr_wrk)
 		return -ENOMEM;
 
@@ -2938,8 +2879,7 @@ static void hv_pci_devices_present(struct hv_pcibus_device *hbus,
 	struct hv_dr_state *dr;
 	int i;
 
-	dr = kzalloc(struct_size(dr, func, relations->device_count),
-		     GFP_NOWAIT);
+	dr = kzalloc_flex(*dr, func, relations->device_count, GFP_NOWAIT);
 	if (!dr)
 		return;
 
@@ -2973,8 +2913,7 @@ static void hv_pci_devices_present2(struct hv_pcibus_device *hbus,
 	struct hv_dr_state *dr;
 	int i;
 
-	dr = kzalloc(struct_size(dr, func, relations->device_count),
-		     GFP_NOWAIT);
+	dr = kzalloc_flex(*dr, func, relations->device_count, GFP_NOWAIT);
 	if (!dr)
 		return;
 
@@ -3762,48 +3701,6 @@ static int hv_send_resources_released(struct hv_device *hdev)
 	return 0;
 }
 
-#define HVPCI_DOM_MAP_SIZE (64 * 1024)
-static DECLARE_BITMAP(hvpci_dom_map, HVPCI_DOM_MAP_SIZE);
-
-/*
- * PCI domain number 0 is used by emulated devices on Gen1 VMs, so define 0
- * as invalid for passthrough PCI devices of this driver.
- */
-#define HVPCI_DOM_INVALID 0
-
-/**
- * hv_get_dom_num() - Get a valid PCI domain number
- * Check if the PCI domain number is in use, and return another number if
- * it is in use.
- *
- * @dom: Requested domain number
- *
- * return: domain number on success, HVPCI_DOM_INVALID on failure
- */
-static u16 hv_get_dom_num(u16 dom)
-{
-	unsigned int i;
-
-	if (test_and_set_bit(dom, hvpci_dom_map) == 0)
-		return dom;
-
-	for_each_clear_bit(i, hvpci_dom_map, HVPCI_DOM_MAP_SIZE) {
-		if (test_and_set_bit(i, hvpci_dom_map) == 0)
-			return i;
-	}
-
-	return HVPCI_DOM_INVALID;
-}
-
-/**
- * hv_put_dom_num() - Mark the PCI domain number as free
- * @dom: Domain number to be freed
- */
-static void hv_put_dom_num(u16 dom)
-{
-	clear_bit(dom, hvpci_dom_map);
-}
-
 /**
  * hv_pci_probe() - New VMBus channel probe, for a root PCI bus
  * @hdev:	VMBus's tracking struct for this root PCI bus
@@ -3816,15 +3713,15 @@ static int hv_pci_probe(struct hv_device *hdev,
 {
 	struct pci_host_bridge *bridge;
 	struct hv_pcibus_device *hbus;
-	u16 dom_req, dom;
+	int ret, dom;
+	u16 dom_req;
 	char *name;
-	int ret;
 
 	bridge = devm_pci_alloc_host_bridge(&hdev->device, 0);
 	if (!bridge)
 		return -ENOMEM;
 
-	hbus = kzalloc(sizeof(*hbus), GFP_KERNEL);
+	hbus = kzalloc_obj(*hbus);
 	if (!hbus)
 		return -ENOMEM;
 
@@ -3845,11 +3742,14 @@ static int hv_pci_probe(struct hv_device *hdev,
 	 * PCI bus (which is actually emulated by the hypervisor) is domain 0.
 	 * (2) There will be no overlap between domains (after fixing possible
 	 * collisions) in the same VM.
+	 *
+	 * Because Gen1 VMs use domain 0, don't allow picking domain 0 here,
+	 * even if bytes 4 and 5 of the instance GUID are both zero. For wider
+	 * userspace compatibility, limit the domain ID to a 16-bit value.
 	 */
 	dom_req = hdev->dev_instance.b[5] << 8 | hdev->dev_instance.b[4];
-	dom = hv_get_dom_num(dom_req);
-
-	if (dom == HVPCI_DOM_INVALID) {
+	dom = pci_bus_find_emul_domain_nr(dom_req, 1, U16_MAX);
+	if (dom < 0) {
 		dev_err(&hdev->device,
 			"Unable to use dom# 0x%x or other numbers", dom_req);
 		ret = -EINVAL;
@@ -3886,7 +3786,7 @@ static int hv_pci_probe(struct hv_device *hdev,
 					   hbus->bridge->domain_nr);
 	if (!hbus->wq) {
 		ret = -ENOMEM;
-		goto free_dom;
+		goto free_bus;
 	}
 
 	hdev->channel->next_request_id_callback = vmbus_next_request_id;
@@ -3982,8 +3882,6 @@ close:
 	vmbus_close(hdev->channel);
 destroy_wq:
 	destroy_workqueue(hbus->wq);
-free_dom:
-	hv_put_dom_num(hbus->bridge->domain_nr);
 free_bus:
 	kfree(hbus);
 	return ret;
@@ -4107,8 +4005,6 @@ static void hv_pci_remove(struct hv_device *hdev)
 	hv_pci_free_bridge_windows(hbus);
 	irq_domain_remove(hbus->irq_domain);
 	irq_domain_free_fwnode(hbus->fwnode);
-
-	hv_put_dom_num(hbus->bridge->domain_nr);
 
 	kfree(hbus);
 }
@@ -4260,51 +4156,9 @@ static struct hv_driver hv_pci_drv = {
 	.resume		= hv_pci_resume,
 };
 
-/* Publish swiotlb_{base,size} so userspace can forward the GPA to the host. */
-static ssize_t swiotlb_base_show(struct device_driver *drv, char *buf)
-{
-	return sysfs_emit(buf, "0x%llx\n",
-			  (unsigned long long)hv_pci_swiotlb_base);
-}
-static DRIVER_ATTR_RO(swiotlb_base);
-
-static ssize_t swiotlb_size_show(struct device_driver *drv, char *buf)
-{
-	return sysfs_emit(buf, "%zu\n", hv_pci_swiotlb_size);
-}
-static DRIVER_ATTR_RO(swiotlb_size);
-
-static void hv_pci_swiotlb_unpublish(void)
-{
-	if (!hv_pci_swiotlb_published)
-		return;
-	driver_remove_file(&hv_pci_drv.driver, &driver_attr_swiotlb_size);
-	driver_remove_file(&hv_pci_drv.driver, &driver_attr_swiotlb_base);
-	hv_pci_swiotlb_published = false;
-}
-
-static void hv_pci_swiotlb_publish(void)
-{
-	if (driver_create_file(&hv_pci_drv.driver, &driver_attr_swiotlb_base))
-		goto warn;
-	if (driver_create_file(&hv_pci_drv.driver, &driver_attr_swiotlb_size)) {
-		driver_remove_file(&hv_pci_drv.driver, &driver_attr_swiotlb_base);
-		goto warn;
-	}
-	hv_pci_swiotlb_published = true;
-	return;
-
-warn:
-	pr_warn("hv_pci: failed to publish swiotlb range to sysfs\n");
-}
-
 static void __exit exit_hv_pci_drv(void)
 {
-	hv_pci_swiotlb_unpublish();
-
 	vmbus_driver_unregister(&hv_pci_drv);
-
-	/* No swiotlb_destroy_pool() exists, so the backing pages are leaked. */
 
 	hvpci_block_ops.read_block = NULL;
 	hvpci_block_ops.write_block = NULL;
@@ -4318,98 +4172,20 @@ static int __init init_hv_pci_drv(void)
 	if (!hv_is_hyperv_initialized())
 		return -ENODEV;
 
-	if (hv_root_partition() && !hv_nested)
+	if (!hv_vmbus_exists())
 		return -ENODEV;
 
 	ret = hv_pci_irqchip_init();
 	if (ret)
 		return ret;
 
-	/* Set the invalid domain number's bit, so it will not be used */
-	set_bit(HVPCI_DOM_INVALID, hvpci_dom_map);
-
 	/* Initialize PCI block r/w interface */
 	hvpci_block_ops.read_block = hv_read_config_block;
 	hvpci_block_ops.write_block = hv_write_config_block;
 	hvpci_block_ops.reg_blk_invalidate = hv_register_block_invalidate;
 
-	ret = vmbus_driver_register(&hv_pci_drv);
-	if (ret)
-		return ret;
-
-	if (hv_pci_swiotlb_pool)
-		hv_pci_swiotlb_publish();
-
-	return 0;
+	return vmbus_driver_register(&hv_pci_drv);
 }
-
-#ifndef MODULE
-/*
- * The dedicated swiotlb pool feature is built-in only: the cmdline parser
- * uses early_param (unavailable in modules) and the allocation runs as a
- * core_initcall so the buddy allocator hands us a 64 MiB DMA32 contiguous
- * range with minimal fragmentation risk.  In module builds
- * hv_pci_swiotlb_size stays 0 and the rest of the file's pool plumbing
- * (probe, publish, exit) is naturally inert.
- */
-#ifdef CONFIG_CONTIG_ALLOC
-/*
- * Reserve the hv_pci swiotlb pool from the buddy allocator.  __GFP_DMA32
- * keeps the range below 4 GiB; kernel ownership keeps Hyper-V page
- * reporting from yanking the backing.  Gated on CONFIG_CONTIG_ALLOC.
- */
-static int __init hv_pci_swiotlb_alloc_pool(void)
-{
-	phys_addr_t end;
-	unsigned long nr_pages;
-	struct page *pages;
-
-	if (!hv_pci_swiotlb_size)
-		return 0;
-
-	nr_pages = hv_pci_swiotlb_size >> PAGE_SHIFT;
-
-	/* UMA on WSL; first_online_node biases nothing in practice. */
-	pages = alloc_contig_pages(nr_pages,
-				   GFP_KERNEL | __GFP_DMA32 | __GFP_ZERO,
-				   first_online_node, &node_online_map);
-	if (!pages) {
-		pr_warn("hv_pci: failed to allocate %zu-byte swiotlb pool below 4G; feature disabled\n",
-			hv_pci_swiotlb_size);
-		hv_pci_swiotlb_size = 0;
-		return 0;
-	}
-
-	hv_pci_swiotlb_base = page_to_phys(pages);
-	end = hv_pci_swiotlb_base + hv_pci_swiotlb_size;
-
-	pr_info("hv_pci: reserved swiotlb pool [%pa..%pa)\n",
-		&hv_pci_swiotlb_base, &end);
-
-	hv_pci_swiotlb_pool = swiotlb_create_pool(hv_pci_swiotlb_base,
-						  hv_pci_swiotlb_size,
-						  "hv-pci-swiotlb");
-	if (IS_ERR(hv_pci_swiotlb_pool)) {
-		pr_err("hv_pci: failed to create swiotlb pool: %ld\n",
-		       PTR_ERR(hv_pci_swiotlb_pool));
-		hv_pci_swiotlb_pool = NULL;
-		free_contig_range(page_to_pfn(pages), nr_pages);
-		hv_pci_swiotlb_base = 0;
-		hv_pci_swiotlb_size = 0;
-	}
-
-	return 0;
-}
-#else
-static int __init hv_pci_swiotlb_alloc_pool(void)
-{
-	if (hv_pci_swiotlb_size)
-		pr_warn("hv_pci: CONFIG_CONTIG_ALLOC disabled; hv_pci_swiotlb= ignored\n");
-	return 0;
-}
-#endif
-core_initcall(hv_pci_swiotlb_alloc_pool);
-#endif /* !MODULE */
 
 module_init(init_hv_pci_drv);
 module_exit(exit_hv_pci_drv);
