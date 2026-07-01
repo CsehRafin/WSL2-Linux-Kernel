@@ -77,3 +77,11 @@ file][install-inst] for information on using a custom built kernel.
 [security-bug]: https://www.kernel.org/doc/html/latest/admin-guide/security-bugs.html
 [submit-patch]: https://www.kernel.org/doc/html/latest/process/submitting-patches.html
 [install-inst]: https://docs.microsoft.com/en-us/windows/wsl/wsl-config#configure-global-options-with-wslconfig
+
+## References
+
+[1] Linux Kernel Community, "The Linux Kernel Archives," kernel.org. [Online]. Available: https://www.kernel.org. [Accessed: Jul. 1, 2026].
+
+[2] L. Torvalds, "Linux Kernel Source Tree," Git repository. [Online]. Available: https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git. [Accessed: Jul. 1, 2026].
+
+[3] Microsoft, "WSL2-Linux-Kernel," GitHub repository. [Online]. Available: https://github.com/microsoft/WSL2-Linux-Kernel. [Accessed: Jul. 1, 2026].
